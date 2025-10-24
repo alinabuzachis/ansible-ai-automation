@@ -1,0 +1,19 @@
+openapi: 3.0.0
+info:
+  title: FinancialQueries
+  version: '1.0'
+paths:
+  /reset_password:
+    post:
+      operationId: ResetPassword
+      description: Resets the user's password in the company directory.
+      responses:
+        '200':
+          description: Password reset initiated successfully.
+  /check_server_status:
+    get:
+      operationId: CheckServerStatus
+      description: Returns current operational status of a given server.
+      responses:
+        '200':
+          description: Server status retrieved successfully.

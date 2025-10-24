@@ -1,0 +1,71 @@
+- name: Personalized Content Generation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    prompt_text: "Generate a personalized marketing email for a customer who purchased a smartwatch last week."
+    s3_bucket_name: "my-marketing-content-archive"
+    current_date: "{{ lookup('pipe', 'date +%Y-%m-%d') }}"
+    upload_audit: false
+ 
+  tasks:
+    - name: List available text generation models
+      amazon.ai.bedrock_foundation_models_info:
+        by_output_modality: 'TEXT'
+      register: image_models
+
+    - name: Select an on-demand compatible image model
+      set_fact:
+        chosen_text_model: >-
+          {{ (image_models.foundation_models 
+            | selectattr('inference_types_supported', 'defined')
+            | selectattr('inference_types_supported', 'contains', 'ON_DEMAND')
+            | map(attribute='model_id')
+            | first) }}
+
+    - name: Inspect the selected model
+      amazon.ai.bedrock_foundation_models_info:
+        model_id: "{{ chosen_text_model }}"
+      register: model_details
+
+    - name: Build payload for content generation
+      set_fact:
+        text_payload:
+          messages:
+            - role: "user"
+              content: "{{ prompt_text }}"
+          max_tokens: 500
+          temperature: 0.7
+          top_p: 0.9
+
+    - name: Generate personalized content
+      amazon.ai.bedrock_invoke_model:
+        model_id: "{{ chosen_text_model }}"
+        body: "{{ text_payload }}"
+        content_type: "application/json"
+        accept: "application/json"
+      register: content_response
+
+    - name: Extract generated message
+      set_fact:
+        generated_message: >-
+          {{ gen_response.response.body.output_text
+            | default(gen_response.response.body.completion)
+            | default(gen_response.response.body.message)
+            | default('No output returned') }}
+    
+    # Ensure S3 bucket exists before upload
+    - name: Ensure bucket exists
+      amazon.aws.s3_bucket:
+        name: "{{ audit_bucket }}"
+        state: present
+      when: upload_audit | default(false)
+
+    - name: Save message to S3 for archival
+      amazon.aws.s3_object:
+        bucket: "{{ s3_bucket_name }}"
+        object: "generated_emails/{{ current_date }}.txt"
+        content: "{{ generated_message }}"
+        mode: put
+      register: s3_result
+      when: upload_audit | default(false)

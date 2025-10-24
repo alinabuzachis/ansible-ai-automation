@@ -1,0 +1,107 @@
+---
+- name: DevOps Guru Monitoring, Configuration, and Diagnostics
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    sns_topic_name: "OpsAlertsTopic"
+    sqs_queue_name: "OpsAlertsQueue"
+    bucket_name: "webbackend-monitoring-{{ 99999 | random }}"
+    upload_audit: true  # Set to true to upload audit report to S3
+
+  tasks:
+    # 1. Setup Resource Collection infrastructure (S3, SNS, SQS)
+    - name: Create S3 bucket
+      amazon.aws.s3_bucket:
+        name: "{{ bucket_name }}"
+        state: present
+        tags:
+          "Devops-guru-Service": "WebBackend"
+          Environment: "DevOpsGuruDemo"
+    
+    - name: Create SNS Topic
+      community.aws.sns_topic:
+        name: "{{ sns_topic_name }}"
+        display_name: My DevOpsGuruNotifications name
+        state: present
+      register: sns_topic
+
+    - name: Create SQS queue to receive DevOps Guru notifications
+      community.aws.sqs_queue:
+        name: "{{ sqs_queue_name }}"
+      register: sqs_result
+
+    - name: Subscribe SQS queue to SNS topic
+      community.aws.sns_topic:
+        name: "{{ sns_topic_name }}"
+        state: present
+        subscriptions:
+          - endpoint: "{{ sqs_result.queue_arn }}"
+            protocol: sqs
+
+    - name: Configure Resource Collection to Monitor WebBackend Service
+      amazon.ai.devopsguru_resource_collection:
+        state: present
+        tags:
+          - app_boundary_key: "Devops-guru-Service"
+            tag_values: ["WebBackend"]
+        notification_channel_config:
+          sns:
+            topic_arn: "{{ sns_topic.sns_arn }}"
+          filters:
+            severities: ["HIGH"]
+            message_types: ["NEW_INSIGHT", "SEVERITY_UPGRADED"]
+      register: config_result
+
+    - name: Audit - Check the Configured Resource Collection Details
+      amazon.ai.devopsguru_resource_collection_info:
+        resource_collection_type: "AWS_TAGS"
+      register: collection_audit
+
+    - name: Diagnostics - Retrieve Detailed Info for a Specific Insight
+      amazon.ai.devopsguru_insight_info:
+        status_filter:
+          closed:
+            type: 'REACTIVE'
+            end_time_range:
+              from_time: "2025-10-20"
+              to_time: "2025-10-22"
+        include_recommendations:
+          locale: EN_US
+        include_anomalies:
+          filters:
+            service_collection:
+              service_names:
+                - S3
+      register: insight_details
+
+    - name: Build Audit Report
+      set_fact:
+        audit_report:
+          timestamp: "{{ lookup('pipe', 'date +%Y-%m-%dT%H:%M:%S') }}"
+          resource_collection_status: "{{ config_result.msg }}"
+          monitored_tags: "{{ collection_audit.resource_collection.tags | default('None') }}"
+          insight_count: "{{ insight_details.reactive_insights | length }}"
+          insights: "{{ insight_details.reactive_insights | default([]) }}"
+
+    - name: Render audit report to JSON
+      ansible.builtin.template:
+        src: "templates/devopsguru_audit_report.json.j2"
+        dest: "/tmp/devopsguru_audit_report.json"
+
+    - name: Upload Audit Report to S3 (Optional)
+      amazon.aws.s3_object:
+        bucket: "{{ s3_audit_bucket }}"
+        object: "reports/devopsguru_audit_{{ audit_report.timestamp }}.json"
+        mode: put
+        src: "/tmp/devopsguru_audit_report.json"
+      when: upload_audit | default(false)
+
+    - name: Final Configuration and Diagnostic Summary
+      ansible.builtin.debug:
+        msg: |
+          === DevOps Guru Monitoring Summary ===
+          Resource Collection Config Status: {{ config_result.msg }}
+          Monitored Tags: {{ collection_audit.resource_collection.tags | default('None') }}
+          Total Insights Retrieved: {{ insight_details.reactive_insights | length }}
+          Audit Report Uploaded: {{ upload_audit | default(false) }}

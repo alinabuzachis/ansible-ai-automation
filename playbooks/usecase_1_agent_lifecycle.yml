@@ -1,0 +1,217 @@
+---
+- name: Full Agent Lifecycle - Deploy, Validate, and Audit
+  hosts: localhost
+  gather_facts: false
+  vars:
+    agent_name: "ITSupportAssistant"
+    alias_name: "prod-alias"
+    action_group_name: "SupportTasks"
+    foundation_model: "amazon.nova-micro-v1:0"
+    lambda_role_name: "LambdaRole"
+    agent_role_name: "AgentRole"
+    policy_name: "AgentPolicy"
+    lambda_function_name: "BedrockLambda"
+    region: "us-east-1"
+    audit_bucket: "it-support-audit-logs"
+    current_date: "{{ lookup('pipe', 'date +%Y-%m-%d') }}"
+    upload_audit: false
+
+  tasks:
+    - name: Create IAM role for Bedrock Agent
+      amazon.aws.iam_role:
+        name: "{{ agent_role_name }}"
+        assume_role_policy_document: "{{ lookup('file', 'assume_role_bedrock_agent.json') }}"
+        state: present
+        managed_policies:
+          - "arn:aws:iam::aws:policy/AmazonBedrockFullAccess"
+      register: agent_role 
+    
+    - name: Save role ARN
+      ansible.builtin.set_fact:
+        iam_role_arn: "{{ agent_role.iam_role.arn }}"
+    
+    - name: Create IAM role for Lambda
+      amazon.aws.iam_role:
+        name: "{{ lambda_role_name }}"
+        assume_role_policy_document: "{{ lookup('file', 'assume_role_lambda.json') }}"
+        state: present
+        managed_policies:
+          - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      register: lambda_role
+    
+    - name: Save role ARN
+      ansible.builtin.set_fact:
+        lambda_role_arn: "{{ lambda_role.iam_role.arn }}"
+    
+    - name: Wait for IAM role to propagate
+      ansible.builtin.pause:
+        seconds: 15
+        prompt: "Waiting for IAM role to be fully propagated."
+    
+    - name: Allow Bedrock Agent to invoke Lambda
+      amazon.aws.iam_policy:
+        iam_type: role
+        iam_name: "{{ agent_role_name }}"
+        policy_name: "{{ policy_name }}"
+        state: present
+        policy_json: >
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": "lambda:InvokeFunction",
+                "Resource": "{{ lambda_role_arn }}"
+              }
+            ]
+          }
+
+    - name: Wait for policy to propagate
+      ansible.builtin.pause:
+        seconds: 15
+        prompt: "Waiting for policy to propagate."
+    
+    - name: Ensure lambda_package directory exists
+      ansible.builtin.file:
+        path: /tmp/lambda_package
+        state: directory
+        mode: '0755'
+    
+    - name: Create Lambda function deployment package using archive
+      ansible.builtin.copy:
+        dest: /tmp/lambda_package/lambda_function.py
+        content: "{{ lookup('file', 'files/lambda_function.py') }}"
+    
+    - name: Install dependencies into package dir
+      ansible.builtin.shell: |
+        pip install requests -t /tmp/lambda_package
+      args:
+        creates: "/tmp/lambda_package/requests"
+    
+    - name: Create deployment zip archive
+      community.general.archive:
+        path: /tmp/lambda_package
+        dest: /tmp/lambda.zip
+        format: zip
+        
+    - name: Create IT Support Lambda function
+      amazon.aws.lambda:
+        state: present
+        name: "{{ lambda_function_name }}"
+        runtime: python3.11
+        role: "{{ lambda_role_arn }}"
+        handler: "lambda_function.handler"
+        zip_file: "/tmp/lambda.zip"
+      register: lambda_creation
+  
+    - name: Display the created Lambda ARN
+      ansible.builtin.set_fact:
+        lambda_arn: "{{ lambda_creation.configuration.function_arn }}"
+    
+    - name: Get AWS caller info
+      amazon.aws.aws_caller_info:
+      register: caller_info
+
+    - name: Save account ID
+      ansible.builtin.set_fact:
+        aws_account_id: "{{ caller_info.account }}"
+    
+    - name: Attach Lambda resource-based policy for Bedrock action group
+      amazon.aws.lambda_policy:
+        state: present
+        function_name: "{{ lambda_function_name }}"
+        statement_id: "AllowBedrockInvocation"
+        action: "lambda:InvokeFunction"
+        principal: "bedrock.amazonaws.com"
+        source_account: "{{ aws_account_id }}"
+        source_arn: "arn:aws:bedrock:{{ region }}:{{ aws_account_id }}:agent/*"
+
+    - name: Wait for Lambda policy to propagate
+      ansible.builtin.pause:
+        seconds: 15
+        prompt: "Waiting for Lambda resource-based policy to propagate."
+  
+    - name: Create a Bedrock Agent
+      amazon.ai.bedrock_agent:
+        state: present
+        agent_name: "{{ agent_name }}"
+        foundation_model: "{{ foundation_model }}"
+        instruction: "You are an internal IT Support Assistant that helps employees with technical issues like password resets or server status checks."
+        agent_resource_role_arn: "{{ iam_role_arn }}"
+      register: agent_deploy
+    
+    - name: Configure an Action Group
+      amazon.ai.bedrock_agent_action_group:
+        state: present
+        agent_name: "{{ agent_name }}"
+        action_group_name: "{{ action_group_name }}"
+        description: "Handles IT support automation tasks (password reset, system checks)."
+        lambda_arn: "{{ lambda_arn }}"
+        api_schema: "{{ lookup('file', 'files/api_schema.yml') }}"
+      register: action_group_deploy
+
+    - name: Create a Production Alias pointing to the DRAFT version
+      amazon.ai.bedrock_agent_alias:
+        state: present
+        agent_name: "{{ agent_name }}"
+        alias_name: "{{ alias_name }}"
+        description: "Production endpoint for the IT Support Assistant."
+      register: alias_deploy
+    
+    - name: Validate agent with a test query
+      amazon.ai.bedrock_invoke_agent:
+        agent_id: "{{ agent_deploy.agent.agent_id }}"
+        agent_alias_id: "{{ alias_deploy.agent_alias.agent_alias_id }}"
+        input_text: "Can you reset my password for the dev portal?"
+        enable_trace: true
+      register: validation_test
+    
+    - name: Retrieve agent configuration details
+      amazon.ai.bedrock_agent_info:
+        agent_name: "{{ agent_name }}"
+      register: agent_info
+
+    - name: Retrieve Action Group configuration
+      amazon.ai.bedrock_agent_action_group_info:
+        agent_name: "{{ agent_name }}"
+        action_group_name: "SupportTasks"
+      register: action_group_info
+
+    - name: List All Aliases
+      amazon.ai.bedrock_agent_alias_info:
+        agent_name: "{{ agent_name }}"
+      register: aliases_list
+
+    - name: Render audit report from template
+      ansible.builtin.template:
+        src: "templates/audit_report.json.j2"
+        dest: "/tmp/audit_report.json"
+    
+    # Ensure S3 bucket exists before upload
+    - name: Ensure audit bucket exists
+      amazon.aws.s3_bucket:
+        name: "{{ audit_bucket }}"
+        state: present
+      when: upload_audit | default(false)
+
+    # Optionally upload report to S3
+    - name: Optionally upload report to S3 for audit trail
+      amazon.aws.s3_object:
+        bucket: "{{ audit_bucket }}"
+        object: "reports/audit_{{ current_date }}.json"
+        mode: put
+        src: "/tmp/audit_report.json"
+      when: upload_audit | default(false)
+
+    # Final console summary
+    - name: Final audit and validation summary
+      ansible.builtin.debug:
+        msg: |
+          === IT Support Assistant Deployment Summary ===
+          Agent: {{ agent_name }} ({{ agent_deploy.agent.agent_id | default('N/A') }})
+          Alias: {{ alias_name }} ({{ alias_deploy.agent_alias.agent_alias_id | default('N/A') }})
+          Model: {{ agent_info.agents.0.foundation_model | default('unknown') }}
+          Validation: {{ validation_test.response_text | truncate(100) }}
+          Total Aliases: {{ aliases_list.agent_aliases | length }}
+          Audit Uploaded: {{ upload_audit }}
+          =================================================

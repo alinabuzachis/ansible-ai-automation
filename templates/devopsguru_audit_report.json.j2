@@ -1,0 +1,11 @@
+{
+  "timestamp": "{{ audit_report.timestamp }}",
+  "monitored_service": "{{ tag_value }}",
+  "config_status": "{{ audit_report.resource_collection_status }}",
+  "total_insights": {{ audit_report.insight_count }},
+  "insight_ids": [
+    {% for insight in audit_report.insights %}
+      "{{ insight.id | default('unknown') }}"{% if not loop.last %},{% endif %}
+    {% endfor %}
+  ]
+}

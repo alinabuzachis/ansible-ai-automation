@@ -1,0 +1,11 @@
+{
+  "agent_name": "{{ agent_name }}",
+  "agent_id": "{{ agent_deploy.agent.agent_id | default('N/A') }}",
+  "alias_name": "{{ alias_name }}",
+  "alias_id": "{{ alias_deploy.agent_alias.agent_alias_id | default('N/A') }}",
+  "foundation_model": "{{ agent_info.agents.0.foundation_model | default('unknown') }}",
+  "validation_response": "{{ validation_test.response_text | default('No response') | truncate(100) }}",
+  "total_aliases": {{ aliases_list.agent_aliases | length | default(0) }},
+  "timestamp": "{{ current_date }}"
+}
+

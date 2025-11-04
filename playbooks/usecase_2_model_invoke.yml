@@ -49,9 +49,7 @@
     - name: Extract generated message
       set_fact:
         generated_message: >-
-          {{ gen_response.response.body.output_text
-            | default(gen_response.response.body.completion)
-            | default(gen_response.response.body.message)
+          {{ content_response.raw_response.choices[0].message.content
             | default('No output returned') }}
     
     # Ensure S3 bucket exists before upload

@@ -9,3 +9,5 @@ collections:
   
   # Required for auxiliary AWS services (SNS, SQS)
   - name: community.aws
+
+  -name: community.general

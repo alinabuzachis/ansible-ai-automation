@@ -7,6 +7,7 @@
     s3_bucket_name: "my-marketing-content-archive"
     current_date: "{{ lookup('pipe', 'date +%Y-%m-%d') }}"
     upload_audit: false
+    region: "us-east-1"
  
   tasks:
     - name: List available text generation models

@@ -83,10 +83,9 @@
         content: "{{ lookup('file', 'files/lambda_function.py') }}"
     
     - name: Install dependencies into package dir
-      ansible.builtin.shell: |
-        pip install requests -t /tmp/lambda_package
-      args:
-        creates: "/tmp/lambda_package/requests"
+      ansible.builtin.pip:
+        name: requests
+        extra_args: "-t /tmp/lambda_package"
     
     - name: Create deployment zip archive
       community.general.archive:

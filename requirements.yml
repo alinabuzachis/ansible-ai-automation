@@ -1,6 +1,6 @@
 collections:
   # Contains all Amazon Bedrock and DevOps Guru modules
-  - name: https://github.com/alinabuzachis/amazon.ai
+  - name: https://github.com/ansible-collections/amazon.ai
     type: git
     version: main
 

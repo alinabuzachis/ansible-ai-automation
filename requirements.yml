@@ -1,8 +1,8 @@
 collections:
   # Contains all Amazon Bedrock and DevOps Guru modules
-  - name: https://github.com/ansible-collections/amazon.ai
+  - name: https://github.com/alinabuzachis/amazon.ai
     type: git
-    version: main
+    version: fix_typos
 
   # Required for core AWS resource management (IAM, Lambda, S3)
   - name: amazon.aws
